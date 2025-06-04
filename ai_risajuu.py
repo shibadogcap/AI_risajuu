@@ -1,8 +1,7 @@
 import os
-import datetime
-import json
-import tempfile
 import random
+from enum import Enum
+
 from google import genai
 from google.genai import types
 from google.genai.types import (
@@ -10,35 +9,53 @@ from google.genai.types import (
     GoogleSearch,
     Tool,
 )
+from pydantic import BaseModel
+
+
+class History(BaseModel):
+    contents: list[types.Content]
+
+
+class ReplyType(str, Enum):
+    text = "text"
+    file = "file"
+
+
+class Reply(BaseModel):
+    type: ReplyType
+    body: str
 
 
 def split_message_text(text, chunk_size=1500):
     return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
-class Reply:
-    def __init__(self):
-        self.text = []
-        self.attachments = []
-
-
 class AI_risajuu:
-    def __init__(self, api_key, system_instruction):
+    def __init__(self, api_key, common_instruction, system_instruction):
         self.main_model_name = os.getenv("MAIN_MODEL_NAME")
         self.sub_model_name = os.getenv("SUB_MODEL_NAME")
+        self.client = genai.Client(api_key=api_key)
+        self.chat = self.client.aio.chats.create(model=self.main_model_name)
         self.google_search_tool = Tool(google_search=GoogleSearch())
         self.url_context_tool = Tool(url_context=types.UrlContext())
-        self.client = genai.Client(api_key=api_key)
-        self.chat_history = []
-        self.uploaded_files = {}
+        self.common_instruction = common_instruction
         self.system_instruction = system_instruction
         self.current_system_instruction = system_instruction
 
-    async def react(self, input_text):
-        if random.random() < float(os.getenv("REACTION_PROBABILITY")):
+    def import_history(self, json_str):
+        history = History.model_validate_json(json_str)
+        self.chat = self.client.aio.chats.create(model=self.main_model_name, history=history.contents)
+
+    def export_history(self):
+        history = History(contents=self.chat.get_history())
+        return history.model_dump_json(indent=2)
+
+    async def react(self, input_text, probability):
+        if random.random() < probability:
             emoji = self.client.models.generate_content(
                 model=self.sub_model_name,
-                contents=["""
+                contents=[
+                    """
                         # 指示
                         「"""
                     + input_text
@@ -48,129 +65,77 @@ class AI_risajuu:
                     """
                 ],
                 config=GenerateContentConfig(
-                    safety_settings=[
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ],
+                    safety_settings=get_safety_settings(),
                 ),
             )
             return emoji.text.strip()
         else:
             return None
 
-    async def chat(self, input_text, attachments):
+    async def reply(self, input_text, attachments=[]):
         if input_text.startswith("あ、これはりさじゅう反応しないでね"):
-            return
-
-        reply = Reply()
-
-        if input_text.endswith("リセット"):
-            self.chat_history = []
-            self.uploaded_files = {}
+            pass
+        elif input_text.endswith("リセット"):
             for file in self.client.files.list():
                 self.client.files.delete(name=file.name)
             self.current_system_instruction = self.system_instruction
-            reply.text = ["履歴をリセットしたじゅう！"]
-            return reply
-
-        if input_text.endswith("エクスポート"):
-            reply.text = ["履歴をエクスポートするじゅう！"]
-            json_data = json.dumps(self.chat_history, ensure_ascii=False, indent=2)
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            prefix = f"risajuu_history_{timestamp}_"
-            with tempfile.NamedTemporaryFile(
-                delete=False, suffix=".json", prefix=prefix, mode="w", encoding="utf-8"
-            ) as file:
-                file.write(json_data)
-                file.flush()
-                reply.attachments.append(file.name)
-            return reply
-
-        if input_text.startswith("カスタム"):
-            custom_instruction = input_text.replace("カスタム", "")
-            with open("common_prompt.md", "r", encoding="utf-8") as f:
-                common_prompt = f.read()
-                self.current_system_instruction = custom_instruction + common_prompt
-            reply.text = [
-                "カスタム履歴を追加して新たなチャットで開始したじゅう！いつものりさじゅうに戻ってほしくなったら、「リセット」って言うじゅう！"
-            ]
-            return reply
-
-        if input_text.startswith("インポート"):
-            if all([len(attachments) == 1, attachments[0].filename.endswith(".json")]):
-                json_data = await attachments[0].read()
-                json_str = json_data.decode("utf-8").replace("\n", "")
-                self.chat_history.append(json.loads(json_str))
-                reply.text = ["履歴をインポートしたじゅう！"]
-                return reply
-            else:
-                reply.text = [
-                    "インポートするには、1つのJSONファイルを添付してほしいじゅう！"
-                ]
-                return reply
-
-        self.chat_history.append(
-            {
-                "role": "user",
-                "content": input_text,
-            }
-        )
-        if attachments:
+            self.chat = self.client.aio.chats.create(model=self.main_model_name)
+            yield Reply(type=ReplyType.text, body="履歴をリセットしたじゅう！")
+        else:
+            text = types.Part.from_text(text=input_text)
+            files = []
             for attachment in attachments:
                 await attachment.save(attachment.filename)
-                self.uploaded_files[attachment.filename] = self.client.files.upload(
-                    file="./" + attachment.filename,
+                files.append(
+                    self.client.files.upload(
+                        file="./" + attachment.filename,
+                    )
                 )
                 os.remove(attachment.filename)
+                
+            parts = [text]
+            parts.extend(files)
+            config = GenerateContentConfig(
+                system_instruction=self.common_instruction + self.current_system_instruction,
 
-        answer = self.generate_answer(self.chat_history, self.uploaded_files)
-        self.chat_history.append(
-            {
-                "role": "model",
-                "content": answer.text,
-            }
-        )
-        reply.text = split_message_text(answer.text)
-        return reply
-
-    def generate_answer(self, history, uploaded_files):
-        return self.client.models.generate_content(
-            model=self.main_model_name,
-            contents=[str(history)] + (list(uploaded_files.values()) if uploaded_files else []),
-            config=GenerateContentConfig(
-                system_instruction=self.current_system_instruction,
                 tools=[self.google_search_tool, self.url_context_tool],
-                safety_settings=[
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                    ),
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                    ),
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                    ),
-                    types.SafetySetting(
-                        category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                        threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                    ),
-                ],
-            ),
-        )
+                safety_settings=get_safety_settings(),
+            )
+
+            buffer = ""
+            async for chunk in await self.chat.send_message_stream(message=parts, config=config):
+                if chunk.text:
+                    buffer += chunk.text
+                    pop = buffer.rsplit(sep="\n", maxsplit=1)
+                    if len(pop) == 2:
+                        yield Reply(type=ReplyType.text, body=pop[0])
+                        buffer = pop[1]
+                else:
+                    if buffer != "":
+                        yield Reply(type=ReplyType.text, body=buffer)
+                        buffer = ""
+
+            if buffer != "":
+                yield Reply(type=ReplyType.text, body=buffer)
+
+
+def get_safety_settings():
+    safety_settings = [
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+    ]
+    return safety_settings
