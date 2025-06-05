@@ -1,5 +1,5 @@
 discord.py==2.1.1
 Flask==2.3.3
 python-dotenv
-google-genai
+google-genai>=1.19.0
 pydantic
