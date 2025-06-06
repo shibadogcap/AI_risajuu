@@ -72,6 +72,15 @@ class Risajuu_discord_client(discord.Client):
             risajuu = AI_risajuu(self.risajuu_config)
             self.risajuu_instance[risajuu_id] = risajuu
 
+        # if message.content == "file_list":
+        #     text = ""
+        #     for file in risajuu.client.files.list():
+        #         meta = risajuu.client.files.get(name=file.name)
+        #         text += f"・{file.name}: {meta}\n"
+        #     for t in split_message_text(text, chunk_size=2000):
+        #         await message.channel.send(t)
+        #     return
+
         # リアクション付与と返信は並行して実行
         async with asyncio.TaskGroup() as tasks:
             if is_DM or message.channel.permissions_for(message.channel.guild.default_role).view_channel:
