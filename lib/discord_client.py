@@ -37,14 +37,17 @@ class DiscordClient(discord.Client):
 
         # DM判定
         is_dm = message.channel.type == discord.ChannelType.private
+        # ターゲット判定
         is_target = (
             is_dm
             or (message.guild.name, message.channel.name) in self.config.targets
             or self.user.mentioned_in(message)
         )
 
-        info = MessageInfo(message=message, is_dm=is_dm, is_target=is_target)
-        await self.message_queue.put(info)
+        # ターゲットかだれでも見れるチャンネルならメッセージキューに追加
+        if is_target or message.channel.permissions_for(message.channel.guild.default_role).view_channel:
+            info = MessageInfo(message=message, is_dm=is_dm, is_target=is_target)
+            await self.message_queue.put(info)
 
     async def send_message(self, destination, reply: Reply):
         # 種別を判定してメッセージを送信

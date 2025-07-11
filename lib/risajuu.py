@@ -107,7 +107,13 @@ class Risajuu:
             return
 
         timestamp = datetime.now(ZoneInfo("Asia/Tokyo")).isoformat()
-        obj = {"timestamp": timestamp, "author": message.author.display_name, "body": input}
+        # ユーザーidも文字列形式のほうがきちんと認識してくれる
+        obj = {
+            "timestamp": timestamp,
+            "author": message.author.display_name,
+            "author_id": str(message.author.id),
+            "body": input,
+        }
 
         async for text in chat.reply(obj, message.attachments):
             if not isinstance(text, str):

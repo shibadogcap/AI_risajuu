@@ -43,7 +43,7 @@ class LLMChat:
         empty_message = types.UserContent(types.Part.from_text(text=""))
         self.add_history(empty_message)
 
-        event = {"type": "message", "contents": ["timestamp", "author", "body"]}
+        event = {"type": "message", "contents": ["timestamp", "author", "author_id", "body"]}
         function_call = types.Part.from_function_call(name="subscribe_event", args=event)
         register = types.ModelContent(function_call)
         self.add_history(register)
